@@ -1,461 +1,317 @@
-import 'package:flutter/material.dart';
+// Import the Flutter material package for UI components
+import 'package:flutter/material.dart'; 
+// Import the FL Chart package to render charts in the app
 import 'package:fl_chart/fl_chart.dart';
+// Import Dart's async library for Timer and asynchronous operations
 import 'dart:async';
+// Import Dart's math library for random number generation and mathematical functions
 import 'dart:math';
+// Import Dart's firebase package
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_database/firebase_database.dart';
-import 'firebase_options.dart';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Firebase self-test
-// ─────────────────────────────────────────────────────────────────────────────
-Future<void> _selfTestFirebase() async {
-  try {
-    final app = Firebase.app();
-    final auth = FirebaseAuth.instanceFor(app: app);
-    await auth.setLanguageCode('en');
-    debugPrint('[FIREBASE] project=${app.options.projectId} appId=${app.options.appId}');
-  } catch (e, st) {
-    debugPrint('[FIREBASE SELF-TEST FAILED] $e\n$st');
-  }
+// Initialize Firebase Messaging Background Handler
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  await Firebase.initializeApp();
+  print("🔹 Background Message: ${message.notification?.title}");
 }
 
-Future<void> main() async {
+// Main entry point of the Flutter application
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  await _selfTestFirebase();
-  runApp(const MyApp());
+  await Firebase.initializeApp();
+
+  FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+
+  runApp(const MyApp()); // Launch the MyApp widget as the root of the app
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Root
-// ─────────────────────────────────────────────────────────────────────────────
+// Define the main application widget, which is stateless
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
+
+  // Build the widget tree for the application
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'Leak Detection App',
-      theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: Colors.black,
-        colorScheme: const ColorScheme.dark(primary: Colors.blueAccent),
+      debugShowCheckedModeBanner: false, // Remove the debug banner
+      title: 'Leak Detection App', // Set the title of the app
+      theme: ThemeData(
+        // Generate a color scheme using a blue seed color
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+        scaffoldBackgroundColor: Colors.black, // Set the scaffold background color to black
       ),
-      home: const AuthGate(),
+      home: FlowMonitoringApp(), // Set the home widget to FlowMonitoringApp
     );
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Auth gate
-// ─────────────────────────────────────────────────────────────────────────────
-class AuthGate extends StatelessWidget {
-  const AuthGate({super.key});
-  @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.userChanges(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
-        }
-        if (!snapshot.hasData) return const LoginScreen();
-        return const FlowMonitoringApp();
-      },
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Login screen
-// ─────────────────────────────────────────────────────────────────────────────
-class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
-  @override
-  State<LoginScreen> createState() => _LoginScreenState();
-}
-
-class _LoginScreenState extends State<LoginScreen> {
-  final _email = TextEditingController();
-  final _password = TextEditingController();
-  final _formKey = GlobalKey<FormState>();
-  bool _busy = false;
-
-  String? _validateEmail(String? v) {
-  final value = (v ?? '').trim();
-  if (value.isEmpty) return 'Enter your email';
-  // simpler regex: one "@" and at least one "."
-  final emailRegex = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
-  if (!emailRegex.hasMatch(value)) return 'Enter a valid email';
-  return null;
-}
-
-  String? _validatePassword(String? v) {
-    final value = (v ?? '').trim();
-    if (value.isEmpty) return 'Enter password';
-    if (value.length < 6) return 'At least 6 characters';
-    return null;
-  }
-
-  Future<void> _signIn() async {
-    if (!_formKey.currentState!.validate()) return;
-    setState(() => _busy = true);
-    try {
-      await FirebaseAuth.instance.signInWithEmailAndPassword(
-        email: _email.text.trim(),
-        password: _password.text.trim(),
-      );
-    } on FirebaseAuthException catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message ?? 'Sign in failed')));
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _register() async {
-    if (!_formKey.currentState!.validate()) return;
-    setState(() => _busy = true);
-    try {
-      await FirebaseAuth.instance.createUserWithEmailAndPassword(
-        email: _email.text.trim(),
-        password: _password.text.trim(),
-      );
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Account created')));
-    } on FirebaseAuthException catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message ?? 'Sign up failed')));
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Form(
-            key: _formKey,
-            child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-              TextFormField(
-                controller: _email,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(labelText: 'Email'),
-                validator: _validateEmail,
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _password,
-                obscureText: true,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(labelText: 'Password'),
-                validator: _validatePassword,
-              ),
-              const SizedBox(height: 16),
-              ElevatedButton(onPressed: _busy ? null : _signIn, child: const Text('Sign In')),
-              TextButton(onPressed: _busy ? null : _register, child: const Text('Create Account')),
-            ]),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SensorState (per sensor)
-// ─────────────────────────────────────────────────────────────────────────────
-class SensorState {
-  final List<Map<String, dynamic>> leakHistory = [];
-  final List<FlSpot> chartData = [];
-  double currentFlowRate = 0.0;
-  double previousFlowRate = 0.0;
-  double totalFlow = 0.0;
-  int ticks = 0;
-  int decreasingTrend = 0;
-  bool showLeakAlert = false;
-  Timer? simTimer;
-
-  double get avgFlow => chartData.isEmpty ? 0.0 : totalFlow / chartData.length;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// App shell: 3 sensors, bottom nav + tab bar
-// ─────────────────────────────────────────────────────────────────────────────
+// Define a stateful widget for monitoring water flow
 class FlowMonitoringApp extends StatefulWidget {
-  const FlowMonitoringApp({super.key});
   @override
-  State<FlowMonitoringApp> createState() => _FlowMonitoringAppState();
+  _FlowMonitoringAppState createState() => _FlowMonitoringAppState();
 }
 
-class _FlowMonitoringAppState extends State<FlowMonitoringApp> with SingleTickerProviderStateMixin {
-  int _pageIndex = 1; // history=0, chart=1, status=2
-  late TabController _tab;
-  int get sensorIndex => _tab.index;
+// State class for FlowMonitoringApp that holds dynamic data and UI updates
+class _FlowMonitoringAppState extends State<FlowMonitoringApp> {
+  PageController _pageController = PageController(); // Controller for managing page navigation
+  int currentPage = 0; // Current page index in the PageView
+  double currentFlowRate = 0.0; // Holds the current water flow rate
+  double previousFlowRate = 0.0; // Holds the previous water flow rate for comparison
+  List<FlSpot> chartData = <FlSpot>[]; // List of data points for the flow rate chart
+  int time = 0; // Time counter used in the simulation (in seconds)
+  double totalFlow = 0.0; // Accumulated flow used for average flow calculation
+  int decreasingTrend = 0; // Counter for consecutive decreases in flow rate
+  bool showLeakAlert = false; // Flag to indicate if a water leak alert should be shown
 
-  final List<SensorState> sensors = [SensorState(), SensorState(), SensorState()];
-  final List<bool> isValveOpen = [true, true, true];
-  final List<bool> isButtonDisabled = [false, false, false];
-  final List<int> cooldownLeft = [5, 5, 5];
+    // Firebase Messaging instance
+  FirebaseMessaging messaging = FirebaseMessaging.instance;
+  FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+      FlutterLocalNotificationsPlugin();
 
-  final FlutterLocalNotificationsPlugin notifier = FlutterLocalNotificationsPlugin();
-
+  // Initialization method, called when the state is first created
   @override
   void initState() {
     super.initState();
-    _tab = TabController(length: 3, vsync: this)..addListener(() => setState(() {}));
-    _initNotifications();
-    _startAllSimulations();
+    _setupFirebaseMessaging();
+    startFlowRateSimulation(); // Start simulating the water flow rate changes
   }
 
-  Future<void> _initNotifications() async {
-    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const init = InitializationSettings(android: android);
-    await notifier.initialize(init);
-    if (await Permission.notification.isDenied) await Permission.notification.request();
+  // ✅ Initialize Firebase Messaging
+  void _setupFirebaseMessaging() async {
+    // Request notification permission
+    NotificationSettings settings = await messaging.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
+
+    if (settings.authorizationStatus == AuthorizationStatus.authorized) {
+      print('✅ Notifications Permission Granted');
+    } else {
+      print('🚨 Notifications Permission Denied');
+    }
+
+    // Get and print FCM token
+    String? token = await messaging.getToken();
+    print("🔹 FCM Token: $token");
+
+    // Initialize Local Notifications
+    const AndroidInitializationSettings initializationSettingsAndroid =
+        AndroidInitializationSettings('@mipmap/ic_launcher');
+
+    final InitializationSettings initializationSettings =
+        InitializationSettings(android: initializationSettingsAndroid);
+
+    await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+
+    // Handle notifications when app is in foreground
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      print("🔔 Foreground Notification Received: ${message.notification?.title}");
+      _showNotification(message.notification?.title, message.notification?.body);
+    });
+
+    // Handle when user taps on notification
+    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+      print("🔔 Notification Clicked: ${message.notification?.title}");
+    });
   }
 
-  void _showLeakNotification(int idx) async {
-    const android = AndroidNotificationDetails('leak', 'Leak Alerts',
-        importance: Importance.max, priority: Priority.high, playSound: true);
-    await notifier.show(idx + 1, 'Leak Detected (Sensor ${idx + 1})',
-        '⚠️ Water leak detected on Sensor ${idx + 1}', const NotificationDetails(android: android));
-  }
+  // ✅ Function to Show Local Notification
+  void _showNotification(String? title, String? body) async {
+    const AndroidNotificationDetails androidPlatformChannelSpecifics =
+        AndroidNotificationDetails(
+      'leak_detect_channel',
+      'Leak Detection Alerts',
+      importance: Importance.high,
+      priority: Priority.high,
+      showWhen: false,
+    );
 
-  // Simulation start/stop per sensor
-  void _startAllSimulations() { for (var i = 0; i < sensors.length; i++) _startSimulation(i); }
-  void _startSimulation(int idx) {
-    final s = sensors[idx];
-    s.simTimer?.cancel();
-    s.simTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+    const NotificationDetails platformChannelSpecifics =
+        NotificationDetails(android: androidPlatformChannelSpecifics);
+
+    await flutterLocalNotificationsPlugin.show(
+      0,
+      title,
+      body,
+      platformChannelSpecifics,
+    );
+  }
+  
+
+  // Function to simulate flow rate changes periodically
+  void startFlowRateSimulation() {
+    // Create a periodic timer that triggers every 2 seconds
+    Timer.periodic(Duration(seconds: 2), (timer) {
       setState(() {
-        s.previousFlowRate = s.currentFlowRate;
-        if (s.ticks < 120) {
-          s.currentFlowRate = 8.0 - idx * 0.3;
+        previousFlowRate = currentFlowRate; // Store the current flow rate before updating
+
+        // Simulate stable flow for the first 15 seconds, then simulate leakage (decreasing flow)
+        if (time < 15) {
+          currentFlowRate = 8.0; // Set a constant stable flow rate
         } else {
-          s.currentFlowRate = max(1.5, s.currentFlowRate - Random().nextDouble() * 0.05);
+          // Reduce the flow rate by a random amount (up to 2) but not lower than 2.0
+          currentFlowRate = max(2.0, currentFlowRate - (Random().nextDouble() * 2));
         }
-        s.totalFlow += s.currentFlowRate;
-        s.chartData.add(FlSpot(s.ticks * 0.1, s.currentFlowRate));
-        s.ticks++;
-        if (s.currentFlowRate < s.previousFlowRate) s.decreasingTrend++; else s.decreasingTrend = 0;
-        if (s.decreasingTrend >= 5) { if (!s.showLeakAlert) _showLeakNotification(idx); s.showLeakAlert = true; }
-        else { s.showLeakAlert = false; }
-        s.leakHistory.add({'time': DateTime.now(), 'flowRate': s.currentFlowRate, 'leak': s.showLeakAlert});
+
+        totalFlow += currentFlowRate; // Update total accumulated flow
+        chartData.add(FlSpot(time.toDouble(), currentFlowRate)); // Add a new data point for the chart
+        time++; // Increment the time counter
+
+        // Keep only the most recent 20 data points in the chart data
+        if (chartData.length > 20) {
+          chartData.removeAt(0);
+        }
+
+        // Check if the flow rate is decreasing compared to the previous value
+        if (currentFlowRate < previousFlowRate) {
+          decreasingTrend++; // Increase the counter for a decreasing trend
+        } else {
+          decreasingTrend = 0; // Reset the counter if the flow rate is not decreasing
+        }
+
+        // If the flow rate has been decreasing consecutively for 5 intervals, show a leak alert
+        if (decreasingTrend >= 5) {
+          showLeakAlert = true;
+          _sendPushNotification("⚠️ Leak Detected", "A possible water leak has been detected!");
+
+        } else {
+          showLeakAlert = false;
+        }
       });
     });
   }
-  void _stopSimulation(int idx) { sensors[idx].simTimer?.cancel(); sensors[idx].simTimer = null; }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-// 3-sensor UI: build + pages
-// ─────────────────────────────────────────────────────────────────────────────
+    // ✅ Function to Send Push Notification
+void _sendPushNotification(String title, String body) {
+  _showNotification(title, body);
+}
 
-  void _toggleValve(int idx) {
-    if (isButtonDisabled[idx]) return;
+  // Calculate and return the average flow rate based on the collected data
+  double getAverageFlowRate() {
+    if (chartData.isEmpty) return 0.0; // Avoid division by zero if no data exists
+    return totalFlow / chartData.length; // Compute the average flow rate
+  }
+
+  // Navigate to a specific page in the PageView
+  void goToPage(int page) {
+    _pageController.animateToPage(
+      page,
+      duration: Duration(milliseconds: 300), // Duration of the page transition animation
+      curve: Curves.easeInOut, // Use an ease in/out curve for smooth transition
+    );
     setState(() {
-      isValveOpen[idx] = !isValveOpen[idx];
-      isButtonDisabled[idx] = true;
-      cooldownLeft[idx] = 5;
-    });
-
-    if (isValveOpen[idx]) {
-      _startSimulation(idx);
-    } else {
-      _stopSimulation(idx);
-    }
-
-    Timer.periodic(const Duration(seconds: 1), (t) {
-      if (cooldownLeft[idx] <= 1) {
-        t.cancel();
-        setState(() => isButtonDisabled[idx] = false);
-      } else {
-        setState(() => cooldownLeft[idx]--);
-      }
+      currentPage = page; // Update the current page index state
     });
   }
 
-  @override
-  void dispose() {
-    for (final s in sensors) {
-      s.simTimer?.cancel();
-    }
-    _tab.dispose();
-    super.dispose();
-  }
-
+  // Build the widget tree for the FlowMonitoringApp
   @override
   Widget build(BuildContext context) {
-    final s = sensors[sensorIndex];
-
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        title: const Text('Leak Monitor', style: TextStyle(color: Colors.white)),
-        bottom: TabBar(
-          controller: _tab,
-          indicatorColor: Colors.blueAccent,
-          labelColor: Colors.white,
-          unselectedLabelColor: Colors.white70,
-          tabs: const [
-            Tab(text: 'Sensor 1'),
-            Tab(text: 'Sensor 2'),
-            Tab(text: 'Sensor 3'),
-          ],
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout, color: Colors.white),
-            onPressed: () async => FirebaseAuth.instance.signOut(),
+      backgroundColor: Colors.black, // Set the background color of the scaffold
+      body: Stack(
+        // Use a Stack to overlay the PageView and navigation buttons
+        children: [
+          // The PageView widget allows swiping between different screens
+          PageView(
+            controller: _pageController, // Attach the page controller to manage pages
+            children: [
+              FlowRateChartScreen(chartData: chartData), // First page: displays the flow rate chart
+              CurrentFlowScreen(
+                currentFlowRate: currentFlowRate, // Pass current flow rate to the screen
+                previousFlowRate: previousFlowRate, // Pass previous flow rate for comparison
+                averageFlowRate: getAverageFlowRate(), // Pass calculated average flow rate
+                showLeakAlert: showLeakAlert, // Pass leak alert status
+              ),
+            ],
           ),
-        ],
-      ),
-      body: [
-        LeakHistoryScreen(leakHistory: s.leakHistory),
-        FlowRateChartScreen(
-          chartData: s.chartData,
-          currentFlowRate: s.currentFlowRate,
-          sensorLabel: 'Sensor ${sensorIndex + 1}',
-        ),
-        CurrentFlowScreen(
-          sensorLabel: 'Sensor ${sensorIndex + 1}',
-          currentFlowRate: s.currentFlowRate,
-          previousFlowRate: s.previousFlowRate,
-          averageFlowRate: s.avgFlow,
-          showLeakAlert: s.showLeakAlert,
-          isValveOpen: isValveOpen[sensorIndex],
-          isButtonDisabled: isButtonDisabled[sensorIndex],
-          cooldownSecondsLeft: cooldownLeft[sensorIndex],
-          onToggleValve: () => _toggleValve(sensorIndex),
-        ),
-      ][_pageIndex],
-      bottomNavigationBar: BottomNavigationBar(
-        backgroundColor: Colors.black,
-        selectedItemColor: Colors.blueAccent,
-        unselectedItemColor: Colors.grey,
-        currentIndex: _pageIndex,
-        onTap: (i) => setState(() => _pageIndex = i),
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.history), label: 'Leak History'),
-          BottomNavigationBarItem(icon: Icon(Icons.show_chart), label: 'Chart'),
-          BottomNavigationBarItem(icon: Icon(Icons.water), label: 'Status'),
-        ],
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Leak History Screen
-// ─────────────────────────────────────────────────────────────────────────────
-class LeakHistoryScreen extends StatelessWidget {
-  final List<Map<String, dynamic>> leakHistory;
-  const LeakHistoryScreen({super.key, required this.leakHistory});
-
-  @override
-  Widget build(BuildContext context) {
-    if (leakHistory.isEmpty) {
-      return const Center(
-        child: Text('No readings yet', style: TextStyle(color: Colors.white70)),
-      );
-    }
-    return ListView.builder(
-      itemCount: leakHistory.length,
-      itemBuilder: (context, index) {
-        final item = leakHistory[index];
-        final leak = item['leak'] == true;
-        final flow = (item['flowRate'] ?? 0.0) as double;
-        final time = item['time'];
-        return ListTile(
-          leading: Icon(leak ? Icons.warning : Icons.check_circle,
-              color: leak ? Colors.red : Colors.green),
-          title: Text('Flow: ${flow.toStringAsFixed(2)} L/min',
-              style: const TextStyle(color: Colors.white)),
-          subtitle: Text('Time: $time',
-              style: const TextStyle(color: Colors.grey)),
-        );
-      },
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Flow Rate Chart Screen (full vs last 30s toggle)
-// ─────────────────────────────────────────────────────────────────────────────
-class FlowRateChartScreen extends StatefulWidget {
-  final List<FlSpot> chartData;
-  final double currentFlowRate;
-  final String sensorLabel;
-
-  const FlowRateChartScreen({
-    super.key,
-    required this.chartData,
-    required this.currentFlowRate,
-    required this.sensorLabel,
-  });
-
-  @override
-  State<FlowRateChartScreen> createState() => _FlowRateChartScreenState();
-}
-
-class _FlowRateChartScreenState extends State<FlowRateChartScreen> {
-  bool showFullRange = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final latest = widget.chartData.isNotEmpty ? widget.chartData.last.x : 0.0;
-    final cutoff = latest - 30.0;
-    final data = showFullRange
-        ? widget.chartData
-        : widget.chartData.where((p) => p.x >= cutoff).toList();
-
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        title: Text(
-          '${widget.sensorLabel} – Flow: ${widget.currentFlowRate.toStringAsFixed(2)} L/min',
-          style: const TextStyle(color: Colors.white),
-        ),
-        actions: [
-          Row(children: [
-            const Text('Full', style: TextStyle(color: Colors.white70)),
-            Switch(
-              value: showFullRange,
-              onChanged: (v) => setState(() => showFullRange = v),
-              activeColor: Colors.greenAccent,
+          // Display a forward navigation button when on the first page
+          if (currentPage == 0)
+            Positioned(
+              right: 20, // Position 20 pixels from the right
+              top: MediaQuery.of(context).size.height / 2 - 30, // Vertically center the button
+              child: IconButton(
+                icon: Icon(Icons.arrow_forward_ios, color: Colors.white, size: 30), // Icon for forward navigation
+                onPressed: () => goToPage(1), // Navigate to the second page when pressed
+              ),
             ),
-          ]),
+          // Display a back navigation button when on the second page
+          if (currentPage == 1)
+            Positioned(
+              left: 20, // Position 20 pixels from the left
+              top: MediaQuery.of(context).size.height / 2 - 30, // Vertically center the button
+              child: IconButton(
+                icon: Icon(Icons.arrow_back_ios, color: Colors.white, size: 30), // Icon for back navigation
+                onPressed: () => goToPage(0), // Navigate to the first page when pressed
+              ),
+            ),
         ],
       ),
+    );
+  }
+}
+
+// Define a stateless widget to display the flow rate chart screen
+class FlowRateChartScreen extends StatelessWidget {
+  final List<FlSpot> chartData; // List of data points for the chart
+
+  // Constructor with required chart data
+  FlowRateChartScreen({required this.chartData});
+
+  // Build the widget tree for the chart screen
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black, // Set the background color to black
+      appBar: AppBar(title: Text("Flow Rate Chart")), // App bar with the screen title
       body: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(8.0), // Add padding around the chart
         child: LineChart(
+          // Configure the chart data and styling using FL Chart package
           LineChartData(
-            backgroundColor: Colors.black,
-            gridData: FlGridData(show: true),
-            borderData: FlBorderData(show: true),
-            titlesData: const FlTitlesData(
+            minY: 0, // Minimum Y-axis value to ensure proper display of data
+            maxY: 10, // Maximum Y-axis value to keep the chart centered
+            gridData: FlGridData(show: true), // Enable grid lines on the chart for better readability
+            titlesData: FlTitlesData(
               leftTitles: AxisTitles(
-                sideTitles: SideTitles(showTitles: true, reservedSize: 40),
+                // Label for the left axis
+                axisNameWidget: Text("Flow Rate (L/min)", style: TextStyle(color: Colors.white, fontSize: 14)),
+                sideTitles: SideTitles(
+                  showTitles: true, 
+                  reservedSize: 40, 
+                  getTitlesWidget: (value, meta) {
+                    // Display each left axis title value
+                    return Text(value.toString(), style: TextStyle(color: Colors.white, fontSize: 12));
+                  }
+                ),
               ),
               bottomTitles: AxisTitles(
-                sideTitles: SideTitles(showTitles: true, reservedSize: 22),
+                // Label for the bottom axis
+                axisNameWidget: Text("Time (seconds)", style: TextStyle(color: Colors.white, fontSize: 14)),
+                sideTitles: SideTitles(
+                  showTitles: true, 
+                  reservedSize: 40, 
+                  getTitlesWidget: (value, meta) {
+                    // Display each bottom axis title value as an integer
+                    return Text(value.toInt().toString(), style: TextStyle(color: Colors.white, fontSize: 12));
+                  }
+                ),
               ),
-              rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-              topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
             ),
+            borderData: FlBorderData(show: true), // Enable border around the chart area
             lineBarsData: [
               LineChartBarData(
-                isCurved: true,
-                spots: data,
-                dotData: FlDotData(show: false),
+                spots: chartData, // Supply the data points for the line chart
+                isCurved: true, // Use a curved line to represent the data smoothly
+                barWidth: 4, // Set the width of the chart line
+                color: Colors.blue, // Color of the chart line
+                belowBarData: BarAreaData(show: false), // Do not show the area below the line
               ),
             ],
+            backgroundColor: Colors.black, // Set the chart's background color to black
           ),
         ),
       ),
@@ -463,155 +319,90 @@ class _FlowRateChartScreenState extends State<FlowRateChartScreen> {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Current Flow Screen
-// ─────────────────────────────────────────────────────────────────────────────
+// Define a stateless widget to display the current flow rate screen
 class CurrentFlowScreen extends StatelessWidget {
-  final String sensorLabel;
-  final double currentFlowRate;
-  final double previousFlowRate;
-  final double averageFlowRate;
-  final bool showLeakAlert;
-  final bool isValveOpen;
-  final bool isButtonDisabled;
-  final VoidCallback onToggleValve;
-  final int cooldownSecondsLeft;
+  final double currentFlowRate; // Current water flow rate value
+  final double previousFlowRate; // Previous water flow rate value
+  final double averageFlowRate; // Average water flow rate calculated from the data
+  final bool showLeakAlert; // Flag to indicate if a leak alert should be displayed
 
-  const CurrentFlowScreen({
-    super.key,
-    required this.sensorLabel,
-    required this.currentFlowRate,
-    required this.previousFlowRate,
-    required this.averageFlowRate,
-    required this.showLeakAlert,
-    required this.isValveOpen,
-    required this.isButtonDisabled,
-    required this.cooldownSecondsLeft,
-    required this.onToggleValve,
-  });
+  // Constructor with required parameters
+  CurrentFlowScreen({required this.currentFlowRate, required this.previousFlowRate, required this.averageFlowRate, required this.showLeakAlert});
 
+  // Build the widget tree for the current flow screen
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        title: Text('Status • $sensorLabel',
-            style: const TextStyle(color: Colors.white)),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout, color: Colors.white),
-            onPressed: () async => FirebaseAuth.instance.signOut(),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            children: [
-              Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Text('Current Flow Rate',
-                        style: TextStyle(color: Colors.grey, fontSize: 18)),
-                    const SizedBox(height: 10),
-                    Text(
-                      '${currentFlowRate.toStringAsFixed(2)} L/min',
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 60,
-                          fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 30),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceAround,
-                      children: [
-                        Column(
-                          children: [
-                            const Text('Average',
-                                style: TextStyle(
-                                    color: Colors.grey, fontSize: 16)),
-                            const SizedBox(height: 5),
-                            Text(averageFlowRate.toStringAsFixed(2),
-                                style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.bold)),
-                          ],
-                        ),
-                        Column(
-                          children: [
-                            const Text('Previous',
-                                style: TextStyle(
-                                    color: Colors.grey, fontSize: 16)),
-                            const SizedBox(height: 5),
-                            Text(previousFlowRate.toStringAsFixed(2),
-                                style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.bold)),
-                          ],
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 40),
-                    Container(
-                      padding: const EdgeInsets.symmetric(vertical: 20),
-                      width: double.infinity,
-                      decoration: BoxDecoration(
-                        color:
-                            showLeakAlert ? Colors.redAccent : Colors.green,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Center(
-                        child: Text(
-                          showLeakAlert ? '⚠️ Leak Detected' : 'Flow Stable',
-                          style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+      backgroundColor: Colors.black, // Set the background color to black
+      appBar: AppBar(title: Text("Current Flow Rate")), // App bar with the screen title
+      body: Center(
+        // Center the content vertically and horizontally
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center, // Center the children within the column
+          children: [
+            // Container to display a leak alert or a stable flow message
+            Container(
+              padding: EdgeInsets.all(20), // Padding inside the container
+              decoration: BoxDecoration(
+                // Change the background color based on leak alert status (red for alert, green if stable)
+                color: showLeakAlert ? Colors.redAccent : Colors.green,
+                borderRadius: BorderRadius.circular(15), // Rounded corners for the container
               ),
-              const SizedBox(height: 20),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: isButtonDisabled ? null : onToggleValve,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor:
-                        isButtonDisabled ? Colors.grey : (isValveOpen ? Colors.red : Colors.green),
-                    padding: const EdgeInsets.symmetric(vertical: 20),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(isValveOpen ? 'Close Valve' : 'Open Valve',
-                          style: const TextStyle(
-                              fontSize: 20, color: Colors.white)),
-                      if (isButtonDisabled) ...[
-                        const SizedBox(width: 10),
-                        Text('(${cooldownSecondsLeft}s)',
-                            style: const TextStyle(
-                                fontSize: 18, color: Colors.white)),
-                      ],
-                    ],
-                  ),
-                ),
+              child: Text(
+                // Display an alert message if a leak is detected, otherwise indicate stable flow
+                showLeakAlert ? "⚠️ Possible Water Leak Detected!" : "✅ Flow Rate Stable",
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white),
               ),
-            ],
-          ),
+            ),
+            SizedBox(height: 20), // Add vertical spacing
+            // Container to display the current flow rate value
+            Container(
+              padding: EdgeInsets.all(20), // Padding inside the container
+              decoration: BoxDecoration(
+                color: Colors.blue, // Background color for the container
+                borderRadius: BorderRadius.circular(15), // Rounded corners for a smooth appearance
+              ),
+              child: Column(
+                children: [
+                  Text(
+                    "Current Flow Rate", // Label for the current flow rate
+                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white),
+                  ),
+                  SizedBox(height: 10), // Add vertical spacing
+                  Text(
+                    // Display the current flow rate formatted to two decimal places
+                    "${currentFlowRate.toStringAsFixed(2)} L/min",
+                    style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.black),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(height: 20), // Add vertical spacing
+            // Container to display the average flow rate value
+            Container(
+              padding: EdgeInsets.all(20), // Padding inside the container
+              decoration: BoxDecoration(
+                color: Colors.blue, // Background color for the container
+                borderRadius: BorderRadius.circular(15), // Rounded corners for consistency
+              ),
+              child: Column(
+                children: [
+                  Text(
+                    "Average Flow Rate", // Label for the average flow rate
+                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white),
+                  ),
+                  SizedBox(height: 10), // Add vertical spacing
+                  Text(
+                    // Display the average flow rate formatted to two decimal places
+                    "${averageFlowRate.toStringAsFixed(2)} L/min",
+                    style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.black),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 }
-
-
