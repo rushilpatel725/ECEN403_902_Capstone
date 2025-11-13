@@ -1,83 +1,118 @@
+/*
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <esp_now.h>
 #include <time.h>
 
-// Wi-Fi credentials
-#define WIFI_SSID "Hee Hee Hoo Hoo Ha Ha"
-#define WIFI_PASSWORD "beepboop"
-
-// Pins and Firebase URL
-#define WATER_SENSOR_PIN 33
+// Wi-Fi & Firebase
+#define WIFI_SSID "TAMU_IoT"
 #define FIREBASE_URL "https://iot-water-leak-default-rtdb.firebaseio.com/leak_readings.json"
 
-// Central Time offset (seconds)
-#define GMT_OFFSET_SEC   -21600   // -6 hours
-#define DAYLIGHT_OFFSET_SEC 3600  // +1 hour during DST
+// Time settings
+#define GMT_OFFSET_SEC     -21600
+#define DAYLIGHT_OFFSET_SEC 3600
 
-void sendLeakStatus(int status);
+// ESP-NOW message
+typedef struct struct_message {
+  int id;
+  float flow_Lmin;
+} struct_message;
+
+struct_message incomingData;
+
+// Globals
+float remote1_flow = 0.0;
+float remote2_flow = 0.0;
+float local_flow = 0.0;
+
+#define LOCAL_SENSOR_PIN 33
+int count = 0;
+int memory = 0;
+
+
+// Function prototypes
+void sendLeakStatus(float localFlow, float remote1Flow, float remote2Flow);
+void OnDataRecv(const uint8_t * mac, const uint8_t *incoming, int len);
 
 void setup() {
   Serial.begin(115200);
-
-  // Connect to Wi-Fi
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting to WiFi");
+  pinMode(LOCAL_SENSOR_PIN, INPUT);
+  
+  // Wi-Fi
+  WiFi.begin(WIFI_SSID);
+  Serial.print("Connecting to Wi-Fi");
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+    delay(300);
     Serial.print(".");
   }
-  Serial.println("\nWiFi connected");
+  Serial.println("\nWi-Fi connected");
 
-  // Configure NTP time with Central Time offset
+  // ESP-NOW
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error initializing ESP-NOW");
+    return;
+  }
+  esp_now_register_recv_cb(OnDataRecv);
+
+  // Time sync
   configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, "pool.ntp.org", "time.nist.gov");
 
-  Serial.print("Waiting for NTP time sync");
-  struct tm timeinfo;
-  while (!getLocalTime(&timeinfo)) {
-    Serial.print(".");
-    delay(500);
-  }
-  Serial.println("\nTime synchronized!");
+  Serial.println("Receiver ready for multiple sensors...");
 }
 
 void loop() {
-  int leakDetected = analogRead(WATER_SENSOR_PIN);  // raw ADC (0–4095)
-  
-  sendLeakStatus(leakDetected);
+  int adc = analogRead(LOCAL_SENSOR_PIN);
+  if (adc > 110) {
+    if (memory == 0) count++;
+    memory = 1;
+  } else {
+    if (memory == 1) count++;
+    memory = 0;
+  }
 
-  delay(5000);  // send every 5 seconds
+  local_flow = (count * 0.001) * (60.0 / 2.0); // L/min
+
+  if (count > 1000){
+    sendLeakStatus(local_flow, remote1_flow, remote2_flow);
+  }
 }
 
-void sendLeakStatus(int status) {
+void OnDataRecv(const uint8_t * mac, const uint8_t *incoming, int len) {
+  if (len != sizeof(struct_message)) return; // Safety check
+
+  memcpy(&incomingData, incoming, sizeof(incomingData));
+
+  if (incomingData.id == 1) remote1_flow = incomingData.flow_Lmin;
+  else if (incomingData.id == 2) remote2_flow = incomingData.flow_Lmin;
+
+  Serial.printf("Received ID %d: %.2f L/min\n", incomingData.id, incomingData.flow_Lmin);
+}
+
+void sendLeakStatus(float localFlow, float remote1Flow, float remote2Flow) {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     http.begin(FIREBASE_URL);
     http.addHeader("Content-Type", "application/json");
 
-    // Get current Central time
     struct tm timeinfo;
     getLocalTime(&timeinfo);
-
     char timeString[30];
     strftime(timeString, sizeof(timeString), "%Y-%m-%d %H:%M:%S", &timeinfo);
 
-    // Build JSON payload
     String payload = "{";
-    payload += "\"leak\": " + String(status) + ",";
+    payload += "\"local_sensor\": " + String(localFlow, 2) + ",";
+    payload += "\"remote1_sensor\": " + String(remote1Flow, 2) + ",";
+    payload += "\"remote2_sensor\": " + String(remote2Flow, 2) + ",";
     payload += "\"time\": \"" + String(timeString) + "\"";
     payload += "}";
 
-    Serial.print("Payload: ");
-    Serial.println(payload);
-
+    Serial.println("Uploading: " + payload);
     int responseCode = http.PUT(payload);
-
-    Serial.print("Response Code: ");
-    Serial.println(responseCode);
+    Serial.printf("Response Code: %d\n", responseCode);
     Serial.println("Response Body: " + http.getString());
-
     http.end();
   } else {
-    Serial.println("Not connected");
+    Serial.println("Wi-Fi not connected!");
   }
 }
+*/
