@@ -1,52 +1,38 @@
 /*
-#include <esp_now.h>
 #include <WiFi.h>
+#include <HTTPClient.h>
+#include <time.h>
 
-uint8_t gateway_mac[] = {0x8C, 0x4F, 0x00, 0x30, 0x53, 0x1C};
+#define WIFI_SSID "TAMU_IoT"
 
-// --- Sensor Pin ---
-// MUST use an ADC1 pin (GPIO 32, 33, 34, 35, 36, 39). 
-// GPIO 33 is perfect.
+// --- Firebase Paths ---
+// CHANGED: This URL now points to "remote_sensor_2"
+#define FB_URL_PUT_REMOTE "https://iot-water-leak-default-rtdb.firebaseio.com/leak_reading/remote_sensor_2.json"
+
+// --- Sensor Pin (ADC1) ---
 #define LOCAL_SENSOR_PIN 33 
 
-// --- Shared Globals (Protected) ---
-// Accessed by both the Sensor Task and the Main Loop
+// --- Shared Globals ---
 volatile unsigned long pulse_count = 0; 
 portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED; 
 
-// --- Globals for Local Sensor ---
+// --- Globals ---
 float current_flow_LPM = 0.0; 
+unsigned long last_send_time = 0;
+const long SEND_INTERVAL = 3000; // Send to cloud every 3 seconds
 
-// --- Timer ---
-unsigned long last_calc_time = 0;
-const long CALC_AND_SEND_INTERVAL = 2000; // Calculate & send every 2 seconds
-
-// --- ESP-NOW Data Structure ---
-typedef struct struct_message {
-    float flow_rate;
-} struct_message;
-
-struct_message myData;
-
-esp_now_peer_info_t peerInfo;
-
-// --- TASK HANDLE ---
+// --- Task Handle ---
 TaskHandle_t SensorTask;
 
 // ==========================================
-//   SEPARATE CORE TASK: ANALOG SENSOR
+//   CORE 0 TASK: ANALOG SENSOR
 // ==========================================
-// This code runs on Core 0. It does nothing but watch the sensor.
 void SensorTaskCode( void * parameter) {
   int last_memory = 0;
-  
-  for(;;) { // Infinite loop
+  for(;;) {
     int adc = analogRead(LOCAL_SENSOR_PIN);
-    
-    // Your threshold logic (ADC > 110)
     if (adc > 110) {
       if (last_memory == 0) {
-        // Critical Section: Protect the counter while modifying it
         portENTER_CRITICAL(&timerMux);
         pulse_count++;
         portEXIT_CRITICAL(&timerMux);
@@ -55,91 +41,65 @@ void SensorTaskCode( void * parameter) {
     } else {
       last_memory = 0;
     }
-
-    // A tiny delay is required to prevent the Watchdog Timer from crashing the ESP
-    // 1ms is very fast (1000Hz sampling), usually plenty for flow meters.
     vTaskDelay(1 / portTICK_PERIOD_MS); 
   }
 }
 
-// --- Callback when data is sent ---
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  // Optional: Debugging
-  // Serial.print("\r\nLast Packet Send Status:\t");
-  // Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
-}
-
 void setup() {
   Serial.begin(115200);
-
-  // --- 1. Setup Sensor Pin ---
   pinMode(LOCAL_SENSOR_PIN, INPUT);
-  
-  // --- 2. Create the Analog Sensor Task ---
-  // This launches the "SensorTaskCode" function on Core 0
-  xTaskCreatePinnedToCore(
-      SensorTaskCode,   
-      "SensorTask",     
-      10000,            
-      NULL,             
-      1,                
-      &SensorTask,      
-      0);               
 
-  // --- 3. Setup ESP-NOW ---
+  // --- Start Sensor Task ---
+  xTaskCreatePinnedToCore(SensorTaskCode, "SensorTask", 10000, NULL, 1, &SensorTask, 0);               
+
+  // --- Wi-Fi Connection ---
   WiFi.mode(WIFI_STA);
-
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("Error initializing ESP-NOW");
-    return;
+  WiFi.begin(WIFI_SSID); 
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(300);
+    Serial.print(".");
   }
-
-  esp_now_register_send_cb(OnDataSent);
-
-  memcpy(peerInfo.peer_addr, gateway_mac, 6);
-  peerInfo.channel = 0;  
-  peerInfo.encrypt = false;
-  
-  if (esp_now_add_peer(&peerInfo) != ESP_OK){
-    Serial.println("Failed to add peer");
-    return;
-  }
+  Serial.println("\nWi-Fi Connected!");
 }
 
 void loop() {
-  // This loop runs on Core 1
   unsigned long current_time = millis();
 
-  // --- Flow Calculation & Sending (every 2 seconds) ---
-  if (current_time - last_calc_time >= CALC_AND_SEND_INTERVAL) {
-    last_calc_time = current_time;
+  if (current_time - last_send_time >= SEND_INTERVAL) {
+    last_send_time = current_time;
 
-    // --- CRITICAL SECTION START ---
-    // Pause the sensor task access briefly to safely read/reset the number
+    // 1. Safe Read & Reset
     portENTER_CRITICAL(&timerMux);
-    unsigned long pulses_this_interval = pulse_count; 
+    unsigned long pulses = pulse_count; 
     pulse_count = 0; 
     portEXIT_CRITICAL(&timerMux);
-    // --- CRITICAL SECTION END ---
 
-    // --- Calculation ---
-    float interval_seconds = CALC_AND_SEND_INTERVAL / 1000.0;
-    float frequency_Hz = pulses_this_interval / interval_seconds;
-    current_flow_LPM = frequency_Hz / 6.6; // Your calibration factor
-
-    if (pulses_this_interval == 0) {
-        current_flow_LPM = 0.0;
-    }
+    // 2. Calculate Flow
+    // Interval is SEND_INTERVAL (3000ms = 3.0s)
+    float interval_seconds = SEND_INTERVAL / 1000.0;
+    float frequency_Hz = pulses / interval_seconds;
+    current_flow_LPM = frequency_Hz / 6.6; 
+    if (pulses == 0) current_flow_LPM = 0.0;
     
-    Serial.printf("[LOCAL] Flow: %.2f L/min | Pulses: %lu\n", current_flow_LPM, pulses_this_interval);
+    Serial.printf("[REMOTE 2] Flow: %.2f L/min | Uploading...\n", current_flow_LPM);
 
-    // --- Send Data via ESP-NOW ---
-    myData.flow_rate = current_flow_LPM;
-    esp_err_t result = esp_now_send(gateway_mac, (uint8_t *) &myData, sizeof(myData));
-    
-    if (result != ESP_OK) {
-      Serial.println("Error sending the data");
+    // 3. Upload DIRECTLY to Firebase
+    if (WiFi.status() == WL_CONNECTED) {
+      HTTPClient http;
+      http.begin(FB_URL_PUT_REMOTE);
+      http.addHeader("Content-Type", "application/json");
+      
+      // We send JUST the number. Firebase treats this as updating that specific field.
+      int httpCode = http.PUT(String(current_flow_LPM, 2));
+      
+      if (httpCode > 0) {
+        Serial.println("Firebase Update Success");
+      } else {
+        Serial.printf("Firebase Error: %d\n", httpCode);
+      }
+      http.end();
     }
   }
 }
-*/
+  */
